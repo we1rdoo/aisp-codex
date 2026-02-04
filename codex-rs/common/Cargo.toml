@@ -15,10 +15,12 @@ codex-ollama = { workspace = true }
 codex-protocol = { workspace = true }
 serde = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+rosetta-aisp = { workspace = true, optional = true }
 
 [features]
 # Separate feature so that `clap` is not a mandatory dependency.
 cli = ["clap", "serde", "toml"]
+aisp = ["rosetta-aisp"]
 elapsed = []
 sandbox_summary = []
 

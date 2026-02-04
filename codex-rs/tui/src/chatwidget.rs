@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::aisp::convert_prompt_for_agent;
 use crate::version::CODEX_CLI_VERSION;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
@@ -3293,10 +3294,17 @@ impl ChatWidget {
             });
         }
 
-        if !text.is_empty() {
+        let conversion = convert_prompt_for_agent(&text);
+        let mut prompt_text_elements = text_elements.clone();
+        if conversion.changed {
+            prompt_text_elements.clear();
+        }
+        let prompt_text = conversion.converted;
+
+        if !prompt_text.is_empty() {
             items.push(UserInput::Text {
-                text: text.clone(),
-                text_elements: text_elements.clone(),
+                text: prompt_text.clone(),
+                text_elements: prompt_text_elements.clone(),
             });
         }
 
@@ -3359,20 +3367,22 @@ impl ChatWidget {
         });
 
         // Persist the text to cross-session message history.
-        if !text.is_empty() {
+        if !prompt_text.is_empty() {
             self.codex_op_tx
-                .send(Op::AddToHistory { text: text.clone() })
+                .send(Op::AddToHistory {
+                    text: prompt_text.clone(),
+                })
                 .unwrap_or_else(|e| {
                     tracing::error!("failed to send AddHistory op: {e}");
                 });
         }
 
         // Only show the text portion in conversation history.
-        if !text.is_empty() {
+        if !prompt_text.is_empty() {
             let local_image_paths = local_images.into_iter().map(|img| img.path).collect();
             self.add_to_history(history_cell::new_user_prompt(
-                text,
-                text_elements,
+                prompt_text,
+                prompt_text_elements,
                 local_image_paths,
             ));
         }

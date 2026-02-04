@@ -17,6 +17,7 @@ use codex_cli::login::run_login_with_device_code;
 use codex_cli::login::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_common::CliConfigOverrides;
+use codex_common::aisp::convert_prompt_to_aisp;
 use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
@@ -398,6 +399,14 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     lines
 }
 
+fn convert_prompt_for_agent(prompt: String) -> String {
+    if cfg!(test) {
+        return prompt;
+    }
+
+    convert_prompt_to_aisp(prompt.as_str()).converted
+}
+
 /// Handle the app exit and print the results. Optionally run the update action.
 fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
     match exit_info.exit_reason {
@@ -461,7 +470,8 @@ fn run_debug_app_server_command(cmd: DebugAppServerCommand) -> anyhow::Result<()
     match cmd.subcommand {
         DebugAppServerSubcommand::SendMessageV2(cmd) => {
             let codex_bin = std::env::current_exe()?;
-            codex_app_server_test_client::send_message_v2(&codex_bin, &[], cmd.user_message, &None)
+            let user_message = convert_prompt_for_agent(cmd.user_message);
+            codex_app_server_test_client::send_message_v2(&codex_bin, &[], user_message, &None)
         }
     }
 }

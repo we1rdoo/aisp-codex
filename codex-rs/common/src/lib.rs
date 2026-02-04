@@ -4,6 +4,9 @@ mod approval_mode_cli_arg;
 #[cfg(feature = "elapsed")]
 pub mod elapsed;
 
+#[cfg(feature = "aisp")]
+pub mod aisp;
+
 #[cfg(feature = "cli")]
 pub use approval_mode_cli_arg::ApprovalModeCliArg;
 

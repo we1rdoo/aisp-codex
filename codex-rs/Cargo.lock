@@ -262,6 +262,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aisp"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f06cd65803e6def0ffa760f208a17e4fa891c15d3fc8937ea553d9644fbab4b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "allocative"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1505,6 +1514,7 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "pretty_assertions",
+ "rosetta-aisp",
  "serde",
  "toml 0.9.11+spec-1.1.0",
 ]
@@ -7128,6 +7138,20 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "rosetta-aisp"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac9db91a09aa282627cb4a005eb4da0f36c94527e6cefe703fd4a66e8b2b004f"
+dependencies = [
+ "aisp",
+ "chrono",
+ "lazy_static",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ pub use cli::Cli;
 pub use cli::Command;
 pub use cli::ReviewArgs;
 use codex_cloud_requirements::cloud_requirements_loader;
+use codex_common::aisp::convert_prompt_to_aisp;
 use codex_common::oss::ensure_oss_provider_ready;
 use codex_common::oss::get_default_model_for_oss_provider;
 use codex_core::AuthManager;
@@ -84,6 +85,14 @@ struct ThreadEventEnvelope {
     thread_id: codex_protocol::ThreadId,
     thread: Arc<codex_core::CodexThread>,
     event: Event,
+}
+
+fn convert_prompt_for_agent(prompt: String) -> String {
+    if cfg!(test) {
+        return prompt;
+    }
+
+    convert_prompt_to_aisp(prompt.as_str()).converted
 }
 
 pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
@@ -389,6 +398,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
                 })
                 .or(root_prompt);
             let prompt_text = resolve_prompt(prompt_arg);
+            let prompt_text = convert_prompt_for_agent(prompt_text);
             let mut items: Vec<UserInput> = imgs
                 .into_iter()
                 .chain(args.images.into_iter())
@@ -410,6 +420,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         }
         (None, root_prompt, imgs) => {
             let prompt_text = resolve_prompt(root_prompt);
+            let prompt_text = convert_prompt_for_agent(prompt_text);
             let mut items: Vec<UserInput> = imgs
                 .into_iter()
                 .map(|path| UserInput::LocalImage { path })
@@ -791,7 +802,7 @@ fn build_review_request(args: ReviewArgs) -> anyhow::Result<ReviewRequest> {
             anyhow::bail!("Review prompt cannot be empty");
         }
         ReviewTarget::Custom {
-            instructions: prompt,
+            instructions: convert_prompt_for_agent(prompt),
         }
     } else {
         anyhow::bail!(

@@ -19,6 +19,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
+use once_cell::sync::Lazy;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,50 @@ use tracing::error;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const AISP_INSTRUCTIONS: &str = include_str!("../../aisp_guide.md");
+static AISP_MARKER: Lazy<String> = Lazy::new(|| {
+    AISP_INSTRUCTIONS
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .to_string()
+});
+
+fn append_aisp_instructions(text: &mut String) {
+    if AISP_INSTRUCTIONS.is_empty() {
+        return;
+    }
+    if !AISP_MARKER.is_empty() && text.contains(AISP_MARKER.as_str()) {
+        return;
+    }
+    if text.contains(AISP_INSTRUCTIONS) {
+        return;
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push('\n');
+    text.push_str(AISP_INSTRUCTIONS);
+}
+
+fn append_aisp_to_model(model: &mut ModelInfo) {
+    append_aisp_instructions(&mut model.base_instructions);
+    if let Some(model_messages) = model.model_messages.as_mut() {
+        if let Some(template) = model_messages.instructions_template.as_mut() {
+            append_aisp_instructions(template);
+        }
+    }
+}
+
+fn append_aisp_to_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    models
+        .into_iter()
+        .map(|mut model| {
+            append_aisp_to_model(&mut model);
+            model
+        })
+        .collect()
+}
 
 /// Strategy for refreshing available models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +264,7 @@ impl ModelsManager {
         .map_err(|_| CodexErr::Timeout)?
         .map_err(map_api_error)?;
 
+        let models = append_aisp_to_models(models);
         self.apply_remote_models(models.clone()).await;
         *self.etag.write().await = etag.clone();
         self.cache_manager
@@ -234,7 +280,8 @@ impl ModelsManager {
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
         let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
-        for model in models {
+        for mut model in models {
+            append_aisp_to_model(&mut model);
             if let Some(existing_index) = existing_models
                 .iter()
                 .position(|existing| existing.slug == model.slug)
@@ -538,6 +585,177 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_available_models_appends_aisp_to_fetched_instructions() {
+        let server = MockServer::start().await;
+        let remote_models = vec![remote_model("remote-aisp", "Remote AISP", 1)];
+        let models_mock = mount_models_once(
+            &server,
+            ModelsResponse {
+                models: remote_models,
+            },
+        )
+        .await;
+
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        config.features.enable(Feature::RemoteModels);
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let provider = provider_for(server.uri());
+        let manager =
+            ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);
+
+        manager
+            .refresh_available_models(&config, RefreshStrategy::OnlineIfUncached)
+            .await
+            .expect("refresh succeeds");
+
+        let models = manager.get_remote_models(&config).await;
+        let fetched = models
+            .iter()
+            .find(|m| m.slug == "remote-aisp")
+            .expect("fetched model should be present");
+        assert!(
+            fetched.base_instructions.contains(AISP_MARKER.as_str()),
+            "fetched model instructions should include AISP marker"
+        );
+        assert_eq!(
+            fetched
+                .base_instructions
+                .matches(AISP_MARKER.as_str())
+                .count(),
+            1,
+            "AISP marker should appear exactly once"
+        );
+        assert_eq!(
+            models_mock.requests().len(),
+            1,
+            "expected a single /models request"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_available_models_does_not_duplicate_aisp_on_cached_refresh() {
+        let server = MockServer::start().await;
+        let remote_models = vec![remote_model("cached-aisp", "Cached AISP", 5)];
+        let models_mock = mount_models_once(
+            &server,
+            ModelsResponse {
+                models: remote_models,
+            },
+        )
+        .await;
+
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        config.features.enable(Feature::RemoteModels);
+        let auth_manager = Arc::new(AuthManager::new(
+            codex_home.path().to_path_buf(),
+            false,
+            AuthCredentialsStoreMode::File,
+        ));
+        let provider = provider_for(server.uri());
+        let manager =
+            ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);
+
+        manager
+            .refresh_available_models(&config, RefreshStrategy::OnlineIfUncached)
+            .await
+            .expect("first refresh succeeds");
+        manager
+            .refresh_available_models(&config, RefreshStrategy::OnlineIfUncached)
+            .await
+            .expect("second refresh succeeds");
+
+        let models = manager.get_remote_models(&config).await;
+        let cached = models
+            .iter()
+            .find(|m| m.slug == "cached-aisp")
+            .expect("cached model should be present");
+        assert_eq!(
+            cached
+                .base_instructions
+                .matches(AISP_MARKER.as_str())
+                .count(),
+            1,
+            "AISP marker should appear exactly once after cache reload"
+        );
+        assert_eq!(
+            models_mock.requests().len(),
+            1,
+            "cache hit should avoid a second /models request"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_available_models_persists_aisp_in_models_cache() {
+        let server = MockServer::start().await;
+        let remote_models = vec![remote_model("persisted-aisp", "Persisted AISP", 5)];
+        let models_mock = mount_models_once(
+            &server,
+            ModelsResponse {
+                models: remote_models,
+            },
+        )
+        .await;
+
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        config.features.enable(Feature::RemoteModels);
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let provider = provider_for(server.uri());
+        let manager =
+            ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);
+
+        manager
+            .refresh_available_models(&config, RefreshStrategy::OnlineIfUncached)
+            .await
+            .expect("refresh succeeds");
+
+        let client_version = crate::models_manager::client_version_to_whole();
+        let cache = manager
+            .cache_manager
+            .load_fresh(&client_version)
+            .await
+            .expect("fresh cache should exist");
+        let persisted = cache
+            .models
+            .iter()
+            .find(|m| m.slug == "persisted-aisp")
+            .expect("persisted model should exist");
+        assert!(
+            persisted.base_instructions.contains(AISP_MARKER.as_str()),
+            "persisted cache instructions should include AISP marker"
+        );
+        assert_eq!(
+            persisted
+                .base_instructions
+                .matches(AISP_MARKER.as_str())
+                .count(),
+            1,
+            "AISP marker should be persisted exactly once"
+        );
+        assert_eq!(
+            models_mock.requests().len(),
+            1,
+            "expected a single /models request"
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_available_models_refetches_when_cache_stale() {
         let server = MockServer::start().await;
         let initial_models = vec![remote_model("stale", "Stale", 1)];
@@ -741,6 +959,47 @@ mod tests {
             refreshed_mock.requests().len(),
             1,
             "second refresh should only hit /models once"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_available_models_skips_remote_fetch_for_api_key_auth() {
+        let server = MockServer::start().await;
+        let models_mock = mount_models_once(
+            &server,
+            ModelsResponse {
+                models: vec![remote_model("should-not-fetch", "Should Not Fetch", 1)],
+            },
+        )
+        .await;
+
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        config.features.enable(Feature::RemoteModels);
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+        let provider = provider_for(server.uri());
+        let manager =
+            ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);
+
+        manager
+            .refresh_available_models(&config, RefreshStrategy::OnlineIfUncached)
+            .await
+            .expect("refresh should short-circuit for API key auth");
+
+        let remote_models = manager.get_remote_models(&config).await;
+        assert!(
+            !remote_models.iter().any(|m| m.slug == "should-not-fetch"),
+            "remote /models response should not be fetched for API key auth"
+        );
+        assert_eq!(
+            models_mock.requests().len(),
+            0,
+            "API key auth should not issue /models requests"
         );
     }
 
